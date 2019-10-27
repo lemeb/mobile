@@ -19,7 +19,7 @@ export default class Auth extends SFAuthManager {
       if(Platform.OS === "android") {
         return "http://10.0.2.2:3000"
       } else {
-        return "http://localhost:3000"
+        return "https://sync.standardnotes.org" // I don't run my own SF Server
       }
     } else {
       return "https://sync.standardnotes.org";
