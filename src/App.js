@@ -15,6 +15,7 @@ import Storage from './lib/sfjs/storageManager'
 import ReviewManager from './lib/reviewManager'
 
 import Compose from "@Screens/Compose"
+import Splash from "@Screens/Splash"
 import Root from "@Screens/Root"
 import MainSideMenu from "@SideMenu/MainSideMenu"
 import NoteSideMenu from "@SideMenu/NoteSideMenu"
@@ -87,20 +88,32 @@ const KeyRecoveryStack = createStackNavigator({
   Screen1: KeyRecovery
 })
 
+const SplashStack = createStackNavigator({
+  Screen1: Splash
+})
+
 const AppDrawer = createStackNavigator({
   Home: AppDrawerStack,
   Settings: SettingsStack,
   InputModal: InputModalStack,
   Authenticate: AuthenticateModalStack,
   ManagePrivileges: ManagePrivilegesStack,
-  KeyRecovery: KeyRecoveryStack
+  KeyRecovery: KeyRecoveryStack,
+  Splash: {
+    screen: Splash,
+    navigationOptions: {
+     gesturesEnabled: false,
+   },
+  }
 }, {
   mode: "modal",
   headerMode: 'none',
 })
 
 AppDrawer.navigationOptions = ({ navigation }) => {
-  return {drawerLockMode: SideMenuManager.get().isLeftSideMenuLocked() ? "locked-closed" : null}
+  return {
+    drawerLockMode: SideMenuManager.get().isLeftSideMenuLocked() ? "locked-closed" : null,
+  }
 };
 
 const DrawerStack = createDrawerNavigator({
@@ -166,12 +179,13 @@ export default class App extends Component {
     await KeysManager.get().loadInitialData();
 
     let ready = () => {
+      KeysManager.get().markApplicationAsRan();
       ApplicationState.get().receiveApplicationStartEvent();
       this.setState({ready: true});
     }
 
-    if(KeysManager.get().isFirstRun()) {
-      KeysManager.get().handleFirstRun().then(ready);
+    if(await KeysManager.get().needsWipe()) {
+      KeysManager.get().wipeData().then(ready).catch(ready);
     } else {
       ready();
     }

@@ -59,6 +59,12 @@ export default class Compose extends Abstract {
     this.registerObservers();
   }
 
+  componentDidMount() {
+    super.componentDidMount();
+    // On tablet, willFocus/didFocus not called on initial launch, causing right side menu to not render. So we'll set handler here.
+    this.setSideMenuHandler();
+  }
+
   registerObservers() {
     this.syncObserver = Sync.get().addEventHandler((event, data) => {
 
@@ -468,7 +474,7 @@ export default class Compose extends Abstract {
     }
 
     return (
-      <SafeAreaView forceInset={{ bottom: 'never'}} style={[this.styles.container, StyleKit.styles.container, StyleKit.styles.baseBackground]}>
+      <SafeAreaView forceInset={{ bottom: 'never', vertical: 'never'}} style={[this.styles.container, StyleKit.styles.container, StyleKit.styles.baseBackground]}>
         {this.note.locked &&
           <View style={this.styles.lockedContainer}>
             <Icon name={StyleKit.nameForIcon("lock")} size={16} color={StyleKit.variable("stylekitBackgroundColor")} />
@@ -537,7 +543,8 @@ export default class Compose extends Abstract {
         }
 
         {!shouldDisplayEditor && Platform.OS == "ios" &&
-          <TextView style={[StyleKit.stylesForKey("noteText"), {paddingBottom: 10}]}
+          <TextView
+            style={[StyleKit.stylesForKey("noteText"), {paddingBottom: 10}]}
             ref={(ref) => this.input = ref}
             autoFocus={false}
             value={this.note.text}

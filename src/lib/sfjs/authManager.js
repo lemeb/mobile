@@ -19,13 +19,12 @@ export default class Auth extends SFAuthManager {
   }
 
   serverUrl() {
-    var user = KeysManager.get().user;
+    let user = KeysManager.get().user;
     return (user && user.server) || this.defaultServer();
   }
 
   offline() {
-    // an offline user could have keys saved if using passcode lock
-    var keys = KeysManager.get().activeKeys() || {};
+    let keys = KeysManager.get().activeKeys() || {};
     return !keys.jwt;
   }
 

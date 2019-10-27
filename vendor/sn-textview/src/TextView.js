@@ -1,5 +1,6 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
+const DeprecatedColorPropType = require('DeprecatedColorPropType');
 import {requireNativeComponent, View, TextInput, findNodeHandle, UIManager, Platform} from 'react-native';
 
 export default class TextView extends Component {
@@ -12,7 +13,8 @@ export default class TextView extends Component {
   }
 
   blur() {
-    UIManager.dispatchViewManagerCommand(findNodeHandle(this.ref), UIManager.SNTextView.Commands.blur, []);
+    let command = UIManager.getViewManagerConfig('SNTextView').Commands.blur;
+    UIManager.dispatchViewManagerCommand(findNodeHandle(this.ref), command, []);
   }
 
   focus() {
@@ -48,9 +50,7 @@ TextView.propTypes = {
   text: PropTypes.string,
   autoFocus: PropTypes.bool,
   editable: PropTypes.bool,
-  // TODO: 
-  // https://github.com/react-native-community/react-native-linear-gradient/issues/356
-  handlesColor: PropTypes.string,
+  handlesColor: DeprecatedColorPropType,
   keyboardDismissMode: PropTypes.oneOf([
       'none', // default
       'on-drag', // Cross-platform

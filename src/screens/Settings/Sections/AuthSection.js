@@ -313,7 +313,10 @@ export default class AuthSection extends Component {
 
     return (
       <TableSection>
-        <SectionHeader title={this.props.title} />
+        {this.props.title &&
+          <SectionHeader title={this.props.title} />
+        }
+        
         {this.state.mfa &&
           renderMfaSubcontent()
         }

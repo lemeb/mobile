@@ -5,9 +5,12 @@ import FingerprintScanner from 'react-native-fingerprint-scanner';
 import SF from './sfjs/sfjs'
 import ModelManager from './sfjs/modelManager'
 import Storage from './sfjs/storageManager'
+import AlertManager from "@SFJS/alertManager"
 import Keychain from "./keychain"
+import SNReactNative from 'standard-notes-rn';
 
 let OfflineParamsKey = "pc_params";
+let BiometricsPrefs = "biometrics_prefs";
 let FirstRunKey = "first_run";
 let StorageEncryptionKey = "storage_encryption";
 
@@ -24,11 +27,66 @@ export default class KeysManager {
   }
 
   constructor() {
+    this.biometricPrefs = {};
     this.accountRelatedStorageKeys = ["auth_params", "user"];
   }
 
+  async runPendingMigrations() {
+    const biometricsMigrationName = "10102019KeychainToStorage";
+    if((await Storage.get().getItem(biometricsMigrationName)) == null) {
+      console.log("Running migration", biometricsMigrationName);
+      await this.migrateBiometricsPrefsToStorage();
+      await Storage.get().setItem(biometricsMigrationName, "true");
+    }
+
+    const jwtUndoMigration = "10232019JwtToKeychain";
+    if((await Storage.get().getItem(jwtUndoMigration)) == null) {
+      console.log("Running migration", jwtUndoMigration);
+      await this.undoJwtMigration();
+      await Storage.get().setItem(jwtUndoMigration, "true");
+    }
+  }
+
+  async migrateBiometricsPrefsToStorage() {
+    // Move biometrics preference to storage
+    if(this.legacy_fingerprint) {
+      this.biometricPrefs.enabled = this.legacy_fingerprint.enabled;
+      this.biometricPrefs.timing = this.legacy_fingerprint.timing;
+      await this.saveBiometricPrefs();
+      this.legacy_fingerprint = null;
+    }
+
+    if(this.legacy_fingerprint) {
+      await this.persistKeysToKeychain();
+    }
+  }
+
+  /*
+    In 10102019KeychainToStorage, we migrated JWT from being stored the keychain to being stored in storage.
+    This was so that when the user uninstalled the app, their JWT would be wiped (rather than retained in the keychain).
+    However, it would be more secure to keep JWT in keychain, even if it persists between uninstalls.
+  */
+  async undoJwtMigration() {
+    let jwt = this.user && this.user.jwt;
+    if(!jwt) {
+      return;
+    }
+
+    this.user.jwt = null;
+    this.activeKeys().jwt = jwt;
+    await this.saveUser(this.user);
+    await this.persistKeysToKeychain();
+  }
+
   async loadInitialData() {
-    var storageKeys = ["auth_params", OfflineParamsKey, "user", FirstRunKey, StorageEncryptionKey];
+    let storageKeys = [
+      "auth_params",
+      "user",
+      OfflineParamsKey,
+      FirstRunKey,
+      StorageEncryptionKey,
+      BiometricsPrefs
+    ];
 
     /*
       We only want to call this once per app session. On Android, the App.js component may be unmounted
@@ -47,14 +105,18 @@ export default class KeysManager {
         }
       }),
 
-      Storage.get().getMultiItems(storageKeys).then((items) => {
-        // first run
-        this.firstRun = items[FirstRunKey] === null || items[FirstRunKey] === undefined;
+      Storage.get().getMultiItems(storageKeys).then(async (items) => {
+        this.missingFirstRunKey = items[FirstRunKey] === null || items[FirstRunKey] === undefined;
 
         // auth params
         var authParams = items.auth_params;
         if(authParams) {
           this.accountAuthParams = JSON.parse(authParams);
+        }
+
+        let biometricPrefs = items[BiometricsPrefs];
+        if(biometricPrefs) {
+          this.biometricPrefs = JSON.parse(biometricPrefs);
         }
 
         // offline params
@@ -84,33 +146,54 @@ export default class KeysManager {
           this.user = {};
         }
       })
-    ])
+    ]).then(async () => {
+      // We only want to run migrations in unlocked app state. If account keys are present, run now,
+      // otherwise wait until offline keys have been set so that account keys are decrypted.
+      if(!this.encryptedAccountKeys) {
+        return this.runPendingMigrations();
+      }
+    })
 
     return this.loadInitialDataPromise;
   }
 
-  isFirstRun() {
-    return this.firstRun;
+  async needsWipe() {
+    // Needs wipe if has keys but no data. However, since "no data" can be incorrectly reported by underlying
+    // AsyncStorage failures, we want to confirm with the user before deleting anything.
+
+    let hasKeys = this.activeKeys() != null;
+    let noData = this.missingFirstRunKey === true;
+    return hasKeys && noData;
   }
 
-  async handleFirstRun() {
-    // on first run, clear keys and data.
-    // why? on iOS keychain data is persisted between installs/uninstalls.
-    // this prevents the user from deleting the app and reinstalling if they forgot their local passocde
+  async markApplicationAsRan() {
+    return Storage.get().setItem(FirstRunKey, "false");
+  }
+
+  async wipeData() {
+    // On iOS, keychain data is persisted between installs/uninstalls. (https://stackoverflow.com/questions/4747404/delete-keychain-items-when-an-app-is-uninstalled)
+    // This prevents the user from deleting the app and reinstalling if they forgot their local passocde
     // or if fingerprint scanning isn't working. By deleting all data on first run, we allow the user to reset app
     // state after uninstall.
 
-    console.log("===Handling First Run===");
+    console.log("===Wiping Data===");
 
-    return Promise.all([
-      Storage.get().clear(),
-      Keychain.clearKeys()
-    ]).then(function(){
-      this.parseKeychainValue(null);
-      this.accountAuthParams = null;
-      this.user = null;
-      Storage.get().setItem(FirstRunKey, "false");
-    }.bind(this));
+    return AlertManager.get().confirm({
+      title: "Previous Installation",
+      text: `We've detected a previous installation of Standard Notes based on your keychain data. You must wipe all data from previous installation to continue.\n\nIf you're seeing this message in error, it might mean we're having issues loading your local database. Please restart the app and try again.`,
+      confirmButtonText: "Delete Local Data",
+      cancelButtonText: "Quit App",
+      onConfirm: async () => {
+        await Storage.get().clear();
+        await Keychain.clearKeys()
+        this.parseKeychainValue(null);
+        this.accountAuthParams = null;
+        this.user = null;
+      },
+      onCancel: () => {
+        SNReactNative.exitApp();
+      }
+    })
   }
 
   /*
@@ -146,9 +229,12 @@ export default class KeysManager {
         this.passcodeTiming = this.offlineKeys.timing;
       }
 
+      // Legacy, migrated to Storage
       if(keys.fingerprint) {
-        this.fingerprintEnabled = keys.fingerprint.enabled;
-        this.fingerprintTiming = keys.fingerprint.timing;
+        this.legacy_fingerprint = keys.fingerprint;
+        this.biometricPrefs.enabled = keys.fingerprint.enabled;
+        this.biometricPrefs.timing = keys.fingerprint.timing;
+        delete keys.fingerprint;
       }
 
       if(keys.encryptedAccountKeys) {
@@ -157,7 +243,7 @@ export default class KeysManager {
         // keys we can use to decrypt encryptedAccountKeys
         this.encryptedAccountKeys = keys.encryptedAccountKeys;
       } else {
-        this.accountKeys = _.omit(keys, ["offline", "fingerprint"]);
+        this.accountKeys = _.omit(keys, ["offline"]);
         if(_.keys(this.accountKeys).length == 0) {
           this.accountKeys = null;
         }
@@ -165,15 +251,13 @@ export default class KeysManager {
     } else {
       this.offlineKeys = null;
       this.passcodeTiming = null;
-      this.fingerprintEnabled = null;
-      this.fingerprintTiming = null;
       this.accountKeys = null;
     }
   }
 
   // what we should write to keychain
   async generateKeychainStoreValue() {
-    var value = {fingerprint: {enabled: this.fingerprintEnabled, timing: this.fingerprintTiming}};
+    let value = {};
 
     if(this.accountKeys) {
       // If offline local passcode keys are available, use that to encrypt account keys
@@ -211,8 +295,8 @@ export default class KeysManager {
     }
 
     var hasImmediatePasscode = this.hasOfflinePasscode() && this.passcodeTiming == "immediately";
-    var hasImmedateFingerprint = this.hasFingerprint() && this.fingerprintTiming == "immediately";
-    var enabled = hasImmediatePasscode || hasImmedateFingerprint;
+    var hasImmedateBiometrics = this.hasBiometrics() && this.biometricPrefs.timing == "immediately";
+    var enabled = hasImmediatePasscode || hasImmedateBiometrics;
 
     if(enabled) {
       FlagSecure.activate();
@@ -241,7 +325,7 @@ export default class KeysManager {
   }
 
   hasAccountKeys() {
-    return _.keys(this.accountKeys).length > 0;
+    return this.accountKeys && this.accountKeys.mk != null;
   }
 
   isOfflineEncryptionEnabled() {
@@ -269,7 +353,7 @@ export default class KeysManager {
   }
 
   jwt() {
-    var keys = this.activeKeys();
+    let keys = this.activeKeys();
     return keys && keys.jwt;
   }
 
@@ -394,6 +478,7 @@ export default class KeysManager {
       } else {
         this.accountKeys = decryptedKeys.content.accountKeys;
         this.encryptedAccountKeys = null;
+        await this.runPendingMigrations();
       }
     }
   }
@@ -406,8 +491,8 @@ export default class KeysManager {
     return this.offlineKeys && this.offlineKeys.pw !== null;
   }
 
-  hasFingerprint() {
-    return this.fingerprintEnabled;
+  hasBiometrics() {
+    return this.biometricPrefs.enabled;
   }
 
   async setPasscodeTiming(timing) {
@@ -415,22 +500,26 @@ export default class KeysManager {
     return this.persistKeysToKeychain();
   }
 
-  async setFingerprintTiming(timing) {
-    this.fingerprintTiming = timing;
-    return this.persistKeysToKeychain();
+  async setBiometricsTiming(timing) {
+    this.biometricPrefs.timing = timing;
+    return this.saveBiometricPrefs();
   }
 
-  async enableFingerprint() {
-    this.fingerprintEnabled = true;
-    if(!this.fingerprintTiming) {
-      this.fingerprintTiming = "on-quit";
+  async enableBiometrics() {
+    this.biometricPrefs.enabled = true;
+    if(!this.biometricPrefs.timing) {
+      this.biometricPrefs.timing = "on-quit";
     }
-    return this.persistKeysToKeychain();
+    return this.saveBiometricPrefs();
   }
 
-  async disableFingerprint() {
-    this.fingerprintEnabled = false;
-    return this.persistKeysToKeychain();
+  async disableBiometrics() {
+    this.biometricPrefs.enabled = false;
+    return this.saveBiometricPrefs();
+  }
+
+  async saveBiometricPrefs() {
+    return Storage.get().setItem(BiometricsPrefs, JSON.stringify(this.biometricPrefs));
   }
 
   getPasscodeTimingOptions() {
@@ -440,10 +529,10 @@ export default class KeysManager {
     ]
   }
 
-  getFingerprintTimingOptions() {
+  getBiometricsTimingOptions() {
     return [
-      {title: "Immediately", key: "immediately", selected: this.fingerprintTiming == "immediately"},
-      {title: "On Quit", key: "on-quit", selected: this.fingerprintTiming == "on-quit"},
+      {title: "Immediately", key: "immediately", selected: this.biometricPrefs.timing == "immediately"},
+      {title: "On Quit", key: "on-quit", selected: this.biometricPrefs.timing == "on-quit"},
     ]
   }
 
