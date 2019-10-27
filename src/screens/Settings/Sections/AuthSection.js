@@ -67,6 +67,13 @@ export default class AuthSection extends Component {
     // Unlock sync after all sign in processes are complete.
     Sync.get().lockSyncing();
 
+    Auth.get().getAuthParamsForEmail(this.state.server, email, extraParams).then((response) => {
+        console.warn(response);
+        if (!response || !response.pw_cost){
+          console.log("error");
+        }
+      });
+
     Auth.get().login(this.state.server, email, password, strict, extraParams).then((response) => {
 
       if(!response || response.error) {
